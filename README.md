@@ -1,4 +1,4 @@
-# Huawei Cloud ELB SSL Automation
+# Huawei Cloud ELB SSL Certificate Automation
 
 **Fully automated** management of Let's Encrypt certificates on Huawei Cloud ELB.
 A Python function running daily on FunctionGraph (serverless) obtains a certificate, uploads it to
