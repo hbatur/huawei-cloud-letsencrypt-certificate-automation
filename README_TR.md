@@ -1,4 +1,4 @@
-# Huawei Cloud ELB SSL Otomasyonu
+# Huawei Cloud ELB SSL Sertifikası Otomasyonu
 
 Huawei Cloud ELB uzerinde Let's Encrypt sertifikalarinin **tam otomatik** yonetimi.
 FunctionGraph (serverless) uzerinde her gun calisan bir Python fonksiyonu, sertifika alir,
