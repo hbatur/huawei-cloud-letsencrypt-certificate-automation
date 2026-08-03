@@ -610,6 +610,26 @@ def main():
     print(f"  Found listener: {listener_name} (id: {listener_id})")
     print(f"  Protocol: {listener_protocol}, Port: 80")
 
+    # Check enhance_l7policy_enable (required for FIXED_RESPONSE)
+    enhance_l7 = http_listener.get("enhance_l7policy_enable", False)
+    if not enhance_l7:
+        print(f"\n  WARNING: enhance_l7policy_enable is false on this listener.")
+        print(f"  FIXED_RESPONSE policies require enhance_l7policy_enable=true.")
+        try:
+            update_url = f"https://elb.{region}.myhuaweicloud.com/v3/{project_id}/elb/listeners/{listener_id}"
+            resp = requests.put(update_url, json={"listener": {"enhance_l7policy_enable": True}},
+                                headers={"X-Auth-Token": token, "Content-Type": "application/json"},
+                                timeout=30)
+            if resp.status_code in (200, 201):
+                print(f"  Successfully enabled enhance_l7policy_enable.")
+            else:
+                print(f"  Failed to enable: {resp.status_code} {resp.text[:200]}")
+                print(f"  Enable it manually in the ELB console and re-run.")
+                sys.exit(1)
+        except Exception as e:
+            print(f"  Error: {e}")
+            sys.exit(1)
+
     if listener_protocol not in ("HTTP",):
         print(f"\n  ERROR: The port 80 listener protocol is '{listener_protocol}', not 'HTTP'.")
         print(f"  L7 policies (FIXED_RESPONSE) only work on HTTP/HTTPS listeners.")
@@ -622,10 +642,9 @@ def main():
     if existing_policies:
         print(f"  {len(existing_policies)} existing L7 policy/policies found:")
         for p in existing_policies:
-            print(f"    - {p.get('name', '?')} (action: {p.get('action', '?')}, position: {p.get('position', '?')})")
-        print(f"\n  WARNING: Existing L7 policies may interfere with the challenge.")
-        print(f"  The function will create challenge policies with position 1 (highest priority).")
-        print(f"  If there is a catch-all redirect, make sure it has a lower priority.")
+            print(f"    - {p.get('name', '?')} (action: {p.get('action', '?')}, priority: {p.get('priority', '?')})")
+        print(f"\n  The function will temporarily shift existing policies +100,")
+        print(f"  create challenge policies at priority 1, and restore after.")
     else:
         print(f"  No existing L7 policies found. L7 routing is ready.")
         print(f"  The function will create temporary L7 policies for the challenge")

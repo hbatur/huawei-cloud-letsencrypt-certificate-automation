@@ -616,6 +616,26 @@ def main():
     print(f"  Listener bulundu: {listener_name} (id: {listener_id})")
     print(f"  Protocol: {listener_protocol}, Port: 80")
 
+    # enhance_l7policy_enable kontrolu (FIXED_RESPONSE icin gerekli)
+    enhance_l7 = http_listener.get("enhance_l7policy_enable", False)
+    if not enhance_l7:
+        print(f"\n  UYARI: Bu listener'da enhance_l7policy_enable kapali.")
+        print(f"  FIXED_RESPONSE policy'ler icin enhance_l7policy_enable=true gerekir.")
+        try:
+            update_url = f"https://elb.{region}.myhuaweicloud.com/v3/{project_id}/elb/listeners/{listener_id}"
+            resp = requests.put(update_url, json={"listener": {"enhance_l7policy_enable": True}},
+                                headers={"X-Auth-Token": token, "Content-Type": "application/json"},
+                                timeout=30)
+            if resp.status_code in (200, 201):
+                print(f"  enhance_l7policy_enable basariyla acildi.")
+            else:
+                print(f"  Acma basarisiz: {resp.status_code} {resp.text[:200]}")
+                print(f"  ELB konsolundan manuel acin ve tekrar calistirin.")
+                sys.exit(1)
+        except Exception as e:
+            print(f"  Hata: {e}")
+            sys.exit(1)
+
     if listener_protocol not in ("HTTP",):
         print(f"\n  HATA: Port 80 listener protocol '{listener_protocol}', HTTP degil.")
         print(f"  L7 policy'ler (FIXED_RESPONSE) sadece HTTP/HTTPS listener'larda calisir.")
@@ -628,10 +648,9 @@ def main():
     if existing_policies:
         print(f"  {len(existing_policies)} mevcut L7 policy/policy bulundu:")
         for p in existing_policies:
-            print(f"    - {p.get('name', '?')} (action: {p.get('action', '?')}, position: {p.get('position', '?')})")
-        print(f"\n  UYARI: Mevcut L7 policy'ler challenge ile cakisabilir.")
-        print(f"  Function, challenge policy'lerini priority 1 (en yuksek oncelik) ile olusturacak.")
-        print(f"  Catch-all redirect varsa, daha dusuk oncelikte oldugundan emin olun.")
+            print(f"    - {p.get('name', '?')} (action: {p.get('action', '?')}, priority: {p.get('priority', '?')})")
+        print(f"\n  Function, mevcut policy'leri gecici olarak +100 kaydiracak,")
+        print(f"  challenge policy'lerini priority 1'de olusturacak, sonra eski haline dondurecek.")
     else:
         print(f"  Mevcut L7 policy bulunamadi. L7 routing hazir.")
         print(f"  Function, challenge icin gecici L7 policy'ler olusturacak")

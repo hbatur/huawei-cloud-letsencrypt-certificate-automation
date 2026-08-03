@@ -59,7 +59,9 @@ Two challenge types are supported:
 1. Is there a certificate matching the domain in ELB? (searches all ELBs, ELB-independent)
 2. If present and valid for >30 days -> skip renewal (rate limit protection)
 3. Obtain a new certificate via Let's Encrypt HTTP-01 challenge:
-   - For each domain, create an L7 policy (FIXED_RESPONSE) on the HTTP listener (port 80)
+   - Ensure `enhance_l7policy_enable=true` on the listener (enable via PUT if false)
+   - Shift all existing L7 policies on the listener +100 in priority
+   - For each domain, create an L7 policy (FIXED_RESPONSE) at priority 1 on the HTTP listener (port 80)
    - The policy returns `200 text/plain <key_authorization>` for the challenge path
    - Let's Encrypt validates by requesting `http://<domain>/.well-known/acme-challenge/<token>`
    - The L7 policy intercepts this request and returns the fixed response
@@ -69,7 +71,7 @@ Two challenge types are supported:
 4b. Upload to CCM (Cloud Certificate Manager) as a hosted certificate (non-fatal)
 4c. Deploy to CDN domains matching the certificate domain list (non-fatal, skipped if no match)
 5. Find and report the listeners using this certificate
-6. Cleanup: delete all L7 policies created for the challenge (in `finally` block)
+6. Cleanup: delete all L7 policies created for the challenge, restore original priorities (in `finally` block)
 
 **DNS-01 Flow:**
 1. Is there a certificate matching the domain in ELB? (searches all ELBs, ELB-independent)
@@ -161,9 +163,16 @@ opencode-project/
   with a PATH rule matching `/.well-known/acme-challenge/<token>` and a FIXED_RESPONSE returning
   the key authorization as `200 text/plain`
 - **Inline rules**: L7 rules are created inline with the policy (single API call)
-- **Priority**: Policies are created with `priority: 1` (highest priority, before any redirect).
-  If `enhance_l7policy_enable` is false on the listener, the priority parameter is omitted on retry.
-- **Cleanup in finally**: All L7 policies are deleted in the `finally` block, even on error
+- **Priority shift**: Before creating challenge policies, all existing L7 policies on the listener
+  are shifted +100 in priority (via PUT, only the priority field is updated — policies are not
+  deleted/recreated). Challenge policies are then created at `priority: 1` (highest).
+  After the challenge (in `finally`), challenge policies are deleted and existing policies are
+  restored to their original priorities. This works with any existing policies (e.g. K8s ingress
+  redirects) without manual configuration.
+- **enhance_l7policy_enable auto-enable**: `fixed_response_config` requires
+  `enhance_l7policy_enable=true` on the listener. The function checks this before the challenge
+  and enables it via PUT if false. The setup wizard also checks and enables it.
+- **Cleanup in finally**: All L7 policies are deleted and priorities restored in the `finally` block, even on error
 - **No wildcard**: HTTP-01 challenge does not support wildcard certificates
 - **OpenSSL via ctypes**: Same as DNS-01 version, no pip package needed
 
@@ -309,7 +318,8 @@ If matched, finds the port 80 HTTP listener and passes its ID to the function.
 5. Find port 80 HTTP listener on the matched ELB
    - If no port 80 listener -> exit
    - If listener protocol is not HTTP (e.g. TCP) -> exit (L7 policies need HTTP)
-6. Check existing L7 policies on the listener (warn about potential conflicts)
+   - If `enhance_l7policy_enable` is false -> enable via PUT (exit if cannot)
+6. Check existing L7 policies on the listener (info only, function handles priority shift)
 7. Create IAM custom policy (ELB + CCM + CDN permissions: `elb:*:*` + `scm:*:*` + `cdn:*:*`)
 8. Create IAM agency (trust to FunctionGraph, `trust_domain_name: op_svc_cff`)
 9. Assign policy to agency (all-projects, `/inherited_to_projects` suffix)
@@ -566,8 +576,8 @@ Each domain gets its own L7 policy (different token = different path). All polic
 15. **HTTP-01 L7 policy `priority` vs `position`**: Use `priority` (not `position`).
     `position` is deprecated/unsupported. Smaller priority = higher priority.
 16. **HTTP-01 `enhance_l7policy_enable`**: `fixed_response_config` requires `enhance_l7policy_enable=true`
-    on the listener. For shared load balancers, this is unsupported.
-17. **HTTP-01 L7 policy cleanup**: L7 policies are deleted in the `finally` block.
+    on the listener. The function and setup wizard auto-enable it via PUT if false. For shared load balancers, this is unsupported.
+17. **HTTP-01 L7 policy cleanup**: L7 policies are deleted and original priorities restored in the `finally` block.
     If the function crashes between creation and cleanup, policies may remain on the listener.
     Re-running the function or manually deleting them is safe.
 18. **CCM has no update API**: CCM (Cloud Certificate Manager) does not support updating an imported

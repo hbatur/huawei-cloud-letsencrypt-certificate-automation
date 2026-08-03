@@ -577,6 +577,22 @@ class HuaweiELBClient:
                 listeners.append(l)
         return listeners
 
+    def ensure_enhance_l7policy_enabled(self, listener_id):
+        url = self._url(f"listeners/{listener_id}")
+        resp = requests.get(url, headers=self.headers, timeout=30)
+        if resp.status_code != 200:
+            raise Exception(f"Get listener failed: {resp.status_code} {resp.text}")
+        listener = resp.json().get("listener", {})
+        if listener.get("enhance_l7policy_enable", False):
+            return
+        update_resp = requests.put(url, json={"listener": {"enhance_l7policy_enable": True}},
+                                   headers=self.headers, timeout=30)
+        if update_resp.status_code not in (200, 201):
+            raise Exception(
+                f"enhance_l7policy_enable is false and could not be enabled: "
+                f"{update_resp.status_code} {update_resp.text}"
+            )
+
     def bind_cert_to_listener(self, listener_id, cert_id):
         url = self._url(f"listeners/{listener_id}")
         body = {"listener": {"default_tls_container_ref": cert_id}}
@@ -649,39 +665,59 @@ class HuaweiELBClient:
                                         challenge_path,
                                         status_code="200", content_type="text/plain"):
         url = self._url("l7policies")
-        base_policy = {
-            "listener_id": listener_id,
-            "action": "FIXED_RESPONSE",
-            "name": name,
-            "fixed_response_config": {
-                "status_code": str(status_code),
-                "content_type": content_type,
-                "message_body": message_body
-            },
-            "rules": [
-                {
-                    "type": "PATH",
-                    "compare_type": "EQUAL_TO",
-                    "value": challenge_path
-                }
-            ]
+        policy_body = {
+            "l7policy": {
+                "listener_id": listener_id,
+                "action": "FIXED_RESPONSE",
+                "name": name,
+                "priority": 1,
+                "fixed_response_config": {
+                    "status_code": str(status_code),
+                    "content_type": content_type,
+                    "message_body": message_body
+                },
+                "rules": [
+                    {
+                        "type": "PATH",
+                        "compare_type": "EQUAL_TO",
+                        "value": challenge_path
+                    }
+                ]
+            }
         }
+        resp = requests.post(url, json=policy_body, headers=self.headers, timeout=30)
+        if resp.status_code in (200, 201):
+            return resp.json()["l7policy"]["id"]
+        raise Exception(
+            f"Create L7 policy failed: {resp.status_code} {resp.text}"
+        )
 
-        # Try with priority 1 first (highest priority, before any redirect)
-        # If enhance_l7policy_enable is false, priority is rejected -> retry without it
-        for attempt in range(2):
-            req_body = {"l7policy": dict(base_policy)}
-            if attempt == 0:
-                req_body["l7policy"]["priority"] = 1
-            resp = requests.post(url, json=req_body, headers=self.headers, timeout=30)
-            if resp.status_code in (200, 201):
-                return resp.json()["l7policy"]["id"]
-            if attempt == 0 and resp.status_code in (400, 409):
-                continue
-            raise Exception(
-                f"Create L7 policy failed: {resp.status_code} {resp.text}"
-            )
-        raise Exception("Create L7 policy failed after retries")
+    def shift_l7_priorities(self, listener_id, delta=1):
+        existing = self.list_l7_policies(listener_id)
+        shifted = []
+        for p in existing:
+            orig_priority = p.get("priority")
+            if orig_priority is not None:
+                new_priority = orig_priority + delta
+                update_url = self._url(f"l7policies/{p['id']}")
+                resp = requests.put(update_url, json={"l7policy": {"priority": new_priority}},
+                                    headers=self.headers, timeout=30)
+                if resp.status_code in (200, 201):
+                    shifted.append((p["id"], orig_priority))
+                else:
+                    raise Exception(
+                        f"Shift L7 priority failed for {p['id']}: {resp.status_code} {resp.text}"
+                    )
+        return shifted
+
+    def restore_l7_priorities(self, shifted):
+        for policy_id, orig_priority in shifted:
+            try:
+                update_url = self._url(f"l7policies/{policy_id}")
+                requests.put(update_url, json={"l7policy": {"priority": orig_priority}},
+                             headers=self.headers, timeout=30)
+            except Exception:
+                pass
 
     def delete_l7_policy(self, policy_id):
         url = self._url(f"l7policies/{policy_id}")
@@ -924,6 +960,7 @@ def handler(event, context):
     force_renew = event.get("force_renew", False)
 
     cleanup_policies = []
+    shifted_priorities = []
     elb_client = None
     ssl_wrapper = None
     acme = None
@@ -970,6 +1007,13 @@ def handler(event, context):
         acme.register_account(contact_emails=[cfg_account_email])
 
         order = acme.create_order(cfg_domains)
+
+        # Ensure enhance_l7policy_enable is true (required for FIXED_RESPONSE)
+        elb_client.ensure_enhance_l7policy_enabled(cfg_http_listener_id)
+
+        # Shift existing L7 policy priorities up by 100 to make room for our
+        # challenge policies at priority 1 (highest priority)
+        shifted_priorities = elb_client.shift_l7_priorities(cfg_http_listener_id, delta=100)
 
         for auth_url in order['authorizations']:
             auth = acme.get_authorization(auth_url)
@@ -1115,6 +1159,9 @@ def handler(event, context):
                     elb_client.delete_l7_policy(policy_id)
                 except Exception:
                     pass
+            # Restore original L7 policy priorities
+            if shifted_priorities:
+                elb_client.restore_l7_priorities(shifted_priorities)
         # Free RSA keys
         if ssl_wrapper and acme:
             try:

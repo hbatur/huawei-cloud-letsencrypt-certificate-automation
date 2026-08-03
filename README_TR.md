@@ -67,14 +67,16 @@ Iki challenge tipi desteklenir:
 
 **HTTP-01 Akis:**
 1. Domain ile eslesen sertifika var mi? -> >30 gun gecerliyse yenilemeyi atla
-2. Her domain icin port 80 listener'da L7 policy (FIXED_RESPONSE) olustur
+2. Listener'da `enhance_l7policy_enable=true` oldugundan emin ol (kapaliysa PUT ile ac)
+3. Mevcut L7 policy'lerin onceligini +100 kaydir (priority shift)
+4. Her domain icin port 80 listener'da L7 policy (FIXED_RESPONSE) priority 1'de olustur
    - Policy, `/.well-known/acme-challenge/<token>` yolunu esler (PATH EQUAL_TO)
    - `200 text/plain <key_authorization>` doner
-3. Let's Encrypt `http://<domain>/.well-known/acme-challenge/<token>` istegiyle dogrular
-4. Sertifika indir -> ELB'ye yukle (varsa update, yoksa create)
-4b. CCM'e hosted certificate olarak yukle (non-fatal)
-4c. CDN domain'lerine sertifika deploy et (non-fatal, eslesme yoksa skip)
-5. Temizlik: tum L7 policy'leri sil (`finally` blogunda)
+5. Let's Encrypt `http://<domain>/.well-known/acme-challenge/<token>` istegiyle dogrular
+6. Sertifika indir -> ELB'ye yukle (varsa update, yoksa create)
+6b. CCM'e hosted certificate olarak yukle (non-fatal)
+6c. CDN domain'lerine sertifika deploy et (non-fatal, eslesme yoksa skip)
+7. Temizlik: L7 policy'leri sil, eski oncelikleri geri yukle (`finally` blogunda)
 
 ## Onkosullar
 
@@ -211,7 +213,8 @@ HXXXX,HPUAXXXX,XXXXXXXXXXXX
    - Eslesme yoksa -> cikis (HTTP-01 calismaz)
 5. Eslesen ELB'de port 80 HTTP listener'i bul
    - Port 80 HTTP listener yoksa -> cikis
-6. Listener'daki mevcut L7 policy'leri kontrol et (cakisma uyari)
+   - `enhance_l7policy_enable` kapaliysa -> PUT ile ac (acamazsa cikis)
+6. Listener'daki mevcut L7 policy'leri kontrol et (bilgi only, function priority shift yapar)
 7. IAM custom policy olustur (`elb:*:*` + `scm:*:*` + `cdn:*:*`)
 8. IAM agency olustur (FunctionGraph'a trust)
 9. Policy'yi agency'ye ata (all-projects)
@@ -391,8 +394,8 @@ Her domain icin ayri L7 policy olusturulur (farkli token = farkli yol). Tum poli
 - **HTTP-01 L7 policy `priority`**: `priority` kullanin (`position` degil). `position` deprecated.
   Kucuk priority = yuksek oncelik. Aralik 1-10000.
 - **HTTP-01 `enhance_l7policy_enable`**: `fixed_response_config`, listener'da `enhance_l7policy_enable=true`
-  gerektirir. Shared load balancer'lar icin desteklenmeyebilir.
-- **HTTP-01 L7 policy temizlik**: L7 policy'ler `finally` blogunda silinir.
+  gerektirir. Function ve setup wizard kapaliysa PUT ile otomatik acar. Shared load balancer'lar icin desteklenmeyebilir.
+- **HTTP-01 L7 policy temizlik**: L7 policy'ler silinir ve eski oncelikler `finally` blogunda geri yuklenir.
   Function olusum ve temizlik arasinda crash olursa, policy'ler listener'da kalabilir.
   Function'i tekrar calistirmak veya manuel silmek guvenlidir.
 - **CCM**: Sertifika ayrica CCM (Cloud Certificate Manager) servisine hosted cert olarak kaydedilir.
